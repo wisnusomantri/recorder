@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<!--
+  ================================================================================
+  PEREKAM SUARA EKSTERNAL — Reading Practice (Latihan Membaca)
+  ================================================================================
+  File ini SENGAJA generik & TIDAK perlu diedit sama sekali. Semua informasi yang
+  dibutuhkan (URL Web App tujuan, token keamanan, ID bacaan, judul bacaan) dikirim
+  lewat parameter URL oleh aplikasi utama (tombol "🎙️ Rekam Suara" -> "🌐 Buka
+  Perekam Eksternal" di menu Reading), jadi file ini tetap bisa dipakai walau URL
+  Web App / token berubah di kemudian hari (mis. setelah deploy ulang).
+
+  CARA PAKAI (SEKALI SAJA):
+    1. Buat/pakai repository GitHub Anda (publik maupun privat).
+    2. Unggah file ini apa adanya ke repo tsb (boleh diberi nama apa saja, mis.
+       "recorder.html" atau "index.html").
+    3. Aktifkan GitHub Pages untuk repo tsb: Settings -> Pages -> Branch: pilih
+       branch (mis. "main") -> Save. GitHub akan memberi URL publik, contoh:
+       https://namauser.github.io/nama-repo/recorder.html
+    4. Tempel URL itu di aplikasi utama (menu Reading -> tombol 🎙️ Rekam Suara ->
+       "❓ Cara Setup (sekali saja)" -> tempel URL -> Simpan).
+  Setelah itu, setiap kali menekan "🌐 Buka Perekam Eksternal", halaman ini akan
+  terbuka di tab baru dengan parameter yang sudah lengkap secara otomatis.
+
+  KENAPA PERLU HALAMAN TERPISAH INI?
+  Web App Google Apps Script selalu dirender di dalam iframe tersandbox oleh
+  Google, sehingga izin microphone browser (getUserMedia) sering diblokir di
+  sana. Halaman ini berjalan sebagai halaman TOP-LEVEL biasa (bukan di dalam
+  iframe), sehingga izin microphone normal bisa diminta & diberikan.
+  ================================================================================
+-->
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎙️ Perekam Suara - Latihan Membaca</title>
+<style>
+  :root {
+    --purple: #7c3aed;
+    --purple-dark: #6d28d9;
+    --emerald: #059669;
+    --emerald-dark: #047857;
+    --rose: #e11d48;
+    --slate: #64748b;
+    --bg: #f8fafc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; min-height: 100vh;
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    width: 100%; max-width: 400px; margin: 16px; overflow: hidden;
+  }
+  .card-header {
+    background: var(--purple); color: #fff; padding: 16px; text-align: center;
+  }
+  .card-header h1 { font-size: 15px; margin: 0 0 4px; }
+  .card-header p { font-size: 11px; margin: 0; opacity: 0.85; }
+  .card-body { padding: 16px; }
+  .judul-bacaan {
+    font-size: 13px; font-weight: 700; color: #334155; text-align: center;
+    margin-bottom: 12px; word-break: break-word;
+  }
+  .status {
+    font-size: 11px; color: var(--slate); text-align: center; min-height: 16px; margin-bottom: 10px;
+  }
+  .status.error { color: var(--rose); font-weight: 600; }
+  .status.ok { color: var(--emerald); font-weight: 600; }
+  .timer-box {
+    background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 12px;
+    padding: 14px; text-align: center; margin-bottom: 12px;
+  }
+  .timer-box .time { font-size: 26px; font-weight: 800; color: var(--purple-dark); }
+  .timer-box .label { font-size: 10px; color: var(--purple-dark); opacity: 0.75; margin-top: 2px; }
+  button {
+    width: 100%; border: none; border-radius: 10px; padding: 12px; font-size: 13px;
+    font-weight: 700; cursor: pointer; margin-bottom: 8px; color: #fff;
+    transition: opacity 0.15s;
+  }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  button:active:not(:disabled) { opacity: 0.85; }
+  .btn-record { background: var(--purple); }
+  .btn-stop { background: var(--rose); }
+  .btn-upload { background: var(--emerald); }
+  .btn-secondary { background: #e2e8f0; color: #475569; }
+  audio { width: 100%; margin-bottom: 12px; }
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row button { margin-bottom: 0; }
+  .missing-params {
+    font-size: 12px; color: var(--rose); text-align: center; line-height: 1.6;
+  }
+  .footer-note {
+    font-size: 10px; color: #94a3b8; text-align: center; margin-top: 4px; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="card-header">
+    <h1>🎙️ Perekam Suara</h1>
+    <p>Latihan Membaca — hasil rekaman otomatis tersimpan ke Google Drive</p>
+  </div>
+  <div class="card-body" id="app-body">
+    <p class="status">⏳ Menyiapkan...</p>
+  </div>
+</div>
+
+<script>
+  // ============================================================
+  // Ambil parameter dari URL: exec (URL Web App), token, readingId, judul
+  // ============================================================
+  const params = new URLSearchParams(window.location.search);
+  const EXEC_URL = params.get('exec') || '';
+  const TOKEN = params.get('token') || '';
+  const READING_ID = params.get('readingId') || '';
+  const JUDUL = params.get('judul') || 'Rekaman Bacaan';
+
+  const appBody = document.getElementById('app-body');
+
+  let mediaRecorder = null;
+  let mediaStream = null;
+  let chunks = [];
+  let mimeType = 'audio/webm';
+  let startTs = null;
+  let timerInterval = null;
+  let recordedBlob = null;
+
+  function escHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function renderIdle(statusMsg, statusType) {
+    appBody.innerHTML = `
+      <p class="judul-bacaan">${escHtml(JUDUL)}</p>
+      <p class="status ${statusType || ''}">${statusMsg || 'Tekan tombol di bawah untuk mulai merekam.'}</p>
+      <button class="btn-record" id="btn-start">🎙️ Mulai Rekam</button>
+    `;
+    document.getElementById('btn-start').onclick = startRecording;
+  }
+
+  function renderRecording() {
+    appBody.innerHTML = `
+      <p class="judul-bacaan">${escHtml(JUDUL)}</p>
+      <div class="timer-box">
+        <div class="time" id="timer">00:00</div>
+        <div class="label">🔴 Sedang merekam...</div>
+      </div>
+      <button class="btn-stop" id="btn-stop">⏹ Berhenti Rekam</button>
+    `;
+    document.getElementById('btn-stop').onclick = stopRecording;
+  }
+
+  function renderPreview() {
+    const url = URL.createObjectURL(recordedBlob);
+    appBody.innerHTML = `
+      <p class="judul-bacaan">${escHtml(JUDUL)}</p>
+      <audio controls src="${url}"></audio>
+      <div class="btn-row">
+        <button class="btn-secondary" id="btn-retry">🔁 Ulangi</button>
+        <button class="btn-upload" id="btn-upload">💾 Upload ke Drive</button>
+      </div>
+    `;
+    document.getElementById('btn-retry').onclick = function() { recordedBlob = null; chunks = []; renderIdle(); };
+    document.getElementById('btn-upload').onclick = uploadRecording;
+  }
+
+  function renderUploading() {
+    appBody.innerHTML = `
+      <p class="judul-bacaan">${escHtml(JUDUL)}</p>
+      <p class="status">⏳ Mengunggah rekaman ke Google Drive...</p>
+    `;
+  }
+
+  function renderDone(success, message) {
+    appBody.innerHTML = `
+      <p class="judul-bacaan">${escHtml(JUDUL)}</p>
+      <p class="status ${success ? 'ok' : 'error'}">${escHtml(message)}</p>
+      ${success
+        ? `<p class="footer-note">✅ Anda bisa menutup tab ini dan kembali ke aplikasi, lalu tekan "🔄 Sudah Selesai Rekam di Tab Lain, Muat Ulang".</p>
+           <button class="btn-secondary" id="btn-again">🎙️ Rekam Lagi</button>`
+        : `<button class="btn-record" id="btn-retry-upload">🔁 Coba Lagi</button>`}
+    `;
+    if (success) {
+      document.getElementById('btn-again').onclick = function() { recordedBlob = null; chunks = []; renderIdle(); };
+    } else {
+      document.getElementById('btn-retry-upload').onclick = renderPreview;
+    }
+  }
+
+  function startRecording() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      renderIdle('⚠️ Browser ini tidak mendukung perekaman audio.', 'error');
+      return;
+    }
+    renderIdle('⏳ Meminta izin microphone...');
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(function(stream) {
+        mediaStream = stream;
+        chunks = [];
+        const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+        mimeType = preferredTypes.find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+        mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+        mimeType = mediaRecorder.mimeType || mimeType || 'audio/webm';
+
+        mediaRecorder.ondataavailable = function(ev) {
+          if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+        };
+        mediaRecorder.onstop = function() {
+          recordedBlob = new Blob(chunks, { type: mimeType });
+          try { mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+          renderPreview();
+        };
+
+        mediaRecorder.start();
+        startTs = Date.now();
+        renderRecording();
+        clearInterval(timerInterval);
+        timerInterval = setInterval(function() {
+          const el = document.getElementById('timer');
+          if (!el || !startTs) return;
+          const elapsed = Math.floor((Date.now() - startTs) / 1000);
+          const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+          const ss = String(elapsed % 60).padStart(2, '0');
+          el.textContent = `${mm}:${ss}`;
+        }, 1000);
+      })
+      .catch(function(err) {
+        renderIdle('⚠️ Izin microphone ditolak/gagal (' + (err && err.name ? err.name : 'error') + '). Periksa izin microphone browser untuk situs ini lalu coba lagi.', 'error');
+      });
+  }
+
+  function stopRecording() {
+    clearInterval(timerInterval);
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop(); // hasil final ditangani di onstop -> renderPreview()
+    }
+  }
+
+  function uploadRecording() {
+    if (!recordedBlob) return;
+    const durasiDetik = startTs ? Math.max(1, Math.round((Date.now() - startTs) / 1000)) : 0;
+    renderUploading();
+
+    const reader = new FileReader();
+    reader.onload = function() {
+      const base64Data = String(reader.result).split(',')[1] || '';
+      const payload = {
+        action: 'uploadReadingAudio',
+        token: TOKEN,
+        readingId: READING_ID,
+        judul: JUDUL,
+        mimeType: mimeType,
+        durasiDetik: durasiDetik,
+        base64Data: base64Data
+      };
+
+      // Content-Type default 'text/plain;charset=UTF-8' saat body berupa string (bukan FormData/
+      // Blob) SENGAJA dipakai supaya request tergolong "simple request" & browser TIDAK mengirim
+      // preflight OPTIONS (yang tidak didukung Apps Script doPost/doOptions).
+      fetch(EXEC_URL, { method: 'POST', body: JSON.stringify(payload) })
+        .then(function(res) { return res.json(); })
+        .then(function(json) {
+          renderDone(!!json.success, json.message || (json.success ? 'Rekaman berhasil disimpan.' : 'Gagal menyimpan rekaman.'));
+        })
+        .catch(function(err) {
+          // Kalau gagal MEMBACA respons (mis. dibatasi CORS oleh browser tertentu), rekamannya
+          // kemungkinan TETAP tersimpan di server (proses simpan berjalan di server terlepas dari
+          // apakah browser berhasil membaca balasannya) — beri tahu user untuk cek balik di aplikasi.
+          renderDone(false, 'Tidak bisa membaca respons server (' + (err && err.message ? err.message : err) + '). Rekaman mungkin TETAP tersimpan — cek riwayat di aplikasi utama sebelum mengulang.');
+        });
+    };
+    reader.readAsDataURL(recordedBlob);
+  }
+
+  // ============================================================
+  // Inisialisasi halaman
+  // ============================================================
+  if (!EXEC_URL || !TOKEN || !READING_ID) {
+    appBody.innerHTML = `
+      <p class="missing-params">
+        ⚠️ Parameter tidak lengkap.<br>
+        Buka halaman ini lewat tombol <b>"🌐 Buka Perekam Eksternal"</b> di menu Reading
+        pada aplikasi utama (bukan mengetik URL ini secara manual), supaya URL Web App,
+        token, & data bacaan terisi otomatis.
+      </p>`;
+  } else {
+    renderIdle();
+  }
+</script>
+
+</body>
+</html>
